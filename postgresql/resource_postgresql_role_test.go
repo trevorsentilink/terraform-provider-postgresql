@@ -237,6 +237,66 @@ resource "postgresql_role" "test_role" {
 	})
 }
 
+// Test setting and resetting pgAudit audit classes on a role
+func TestAccPostgresqlRole_Audit(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck: func() {
+			testAccPreCheck(t)
+			testCheckCompatibleVersion(t, featurePrivileges)
+		},
+		Providers:    testAccProviders,
+		CheckDestroy: testAccCheckPostgresqlRoleDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: `
+resource "postgresql_role" "audit_role" {
+  name  = "audit_role"
+  audit = "READ"
+}`,
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("postgresql_role.audit_role", "audit", "READ"),
+					testAccCheckRoleAudit(t, "audit_role", "READ"),
+				),
+			},
+			{
+				Config: `
+resource "postgresql_role" "audit_role" {
+  name  = "audit_role"
+  audit = ""
+}`,
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("postgresql_role.audit_role", "audit", ""),
+					testAccCheckRoleAudit(t, "audit_role", ""),
+				),
+			},
+		},
+	})
+}
+
+// testAccCheckRoleAudit verifies the pgaudit.log setting for a role in the database
+func testAccCheckRoleAudit(t *testing.T, roleName, expected string) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		client := testAccProvider.Meta().(*Client)
+		db, err := client.Connect()
+		if err != nil {
+			return fmt.Errorf("could not connect to database: %v", err)
+		}
+		var auditVal string
+		query := `SELECT opt.option_value FROM pg_roles r, LATERAL pg_options_to_table(r.rolconfig) opt WHERE r.rolname=$1 AND opt.option_name='pgaudit.log'`
+		err = db.QueryRow(query, roleName).Scan(&auditVal)
+		switch {
+		case err == sql.ErrNoRows:
+			auditVal = ""
+		case err != nil:
+			return fmt.Errorf("error reading audit classes for role %s: %v", roleName, err)
+		}
+		if auditVal != expected {
+			return fmt.Errorf("audit classes mismatch for role %s: expected %q, got %q", roleName, expected, auditVal)
+		}
+		return nil
+	}
+}
+
 func testAccCheckPostgresqlRoleDestroy(s *terraform.State) error {
 	client := testAccProvider.Meta().(*Client)
 
